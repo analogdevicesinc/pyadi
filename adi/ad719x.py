@@ -97,7 +97,7 @@ class ad719x(rx, context_manager):
             ret = (val+_offset)/1000 * _scale
 
         if isinstance(val, np.ndarray):
-            ret = [(x+offset)/1000 * _scale for x in val]
+            ret = [((x+_offset)/1000) * _scale for x in val]
 
         if ret is None:
             raise Exception("Error in converting to actual voltage")
