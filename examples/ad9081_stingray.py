@@ -41,19 +41,19 @@ conv.tx_ddr_offload   = False
 conv.rx_ddr_offload   = False
 
 stdout, stderr = ssh._run(f"busybox devmem 0x{tx_offload_base_addr + control_reg_offload:02x} 32 0x2")
-stdout, stderr = ssh._run(f"busybox devmem 0x{rx_offload_base_addr + control_reg_offload:02x} 32 0x2")
+stdout, stderr = ssh._run(f"busybox devmem 0x{rx_offload_base_addr + control_reg_offload:02x} 32 0x1")
 
 frame_length_ms           = 1
-rx_time                   = 0.533
+rx_time                   = 5
 generated_signal_time     = 0.1 
-blank_time                = 0.05
-use_tx_mxfe_en            = 1
+blank_time                = 0
+use_tx_mxfe_en            = 0
 tx_time                   = generated_signal_time - blank_time
-capture_range             = 1
+capture_range             = 100
 
 
 N_tx                      = int((generated_signal_time * conv.tx_sample_rate) / 1000)
-N_rx                      = int((rx_time * conv.tx_sample_rate) / 1000)
+N_rx                      = int((rx_time * conv.rx_sample_rate) / 1000)
 
 conv.rx_buffer_size       = N_rx
 
@@ -67,6 +67,7 @@ TDD_ENABLE      = 2
 RX_MXFE_EN      = 3
 TX_MXFE_EN      = 4
 TX_STINGRAY_EN  = 5
+
 if use_tx_mxfe_en: 
     print("0x001B:", conv.ad9081_register_read(0x001B))
     conv.ad9081_register_write(0x001B,0xf)
@@ -75,6 +76,7 @@ if use_tx_mxfe_en:
     print("0x0321:", conv.ad9081_register_read(0x0321))
     conv.ad9081_register_write(0x0321,0x00)
     print("0x0321:", conv.ad9081_register_read(0x0321))
+
     tddn.channel[TX_MXFE_EN].on_ms    = 0
     tddn.channel[TX_MXFE_EN].off_ms   = tx_time
     tddn.channel[TX_MXFE_EN].polarity = 0
@@ -92,50 +94,82 @@ for chan in [TDD_ENABLE,RX_MXFE_EN,TX_STINGRAY_EN]:
     tddn.channel[chan].polarity = 1
     tddn.channel[chan].enable   = 1
 
-
-
-for chan in [RX_OFFLOAD_SYNC, TX_OFFLOAD_SYNC]:
+for chan in [TX_OFFLOAD_SYNC,RX_OFFLOAD_SYNC]:
     tddn.channel[chan].on_raw   = 0
-    tddn.channel[chan].off_raw  = 10
+    tddn.channel[chan].off_raw  = 1
     tddn.channel[chan].polarity = 0
     tddn.channel[chan].enable   = 1
 
 tddn.enable = 1
 
 print(f"TX Sampling_rate: {conv.tx_sample_rate}")
-print(f"RX Sampling_rate: {conv.rx_sample_rate}")
 
 print(f"TX buffer length: {N_tx}")
-print(f"RX buffer length: {N_rx}")
 
 print(f"Generated signal time[ms]: {generated_signal_time}")
 print(f"TX_transmit time[ms]: {tx_time}")
 
-print(f"RX_recieve time[ms]:  {((1/conv.rx_sample_rate) * N_rx)*1000}")
+print(f"RX_recieve time[ms]:  {((1/conv.rx_sample_rate) * conv.rx_buffer_size)*1000}")
 
 print(f"TDD_frame time[ms]: {tddn.frame_length_ms}")
+print(f"TDD_frame time[raw]: {tddn.frame_length_raw}")
+print(f"RX buffer length: {conv.rx_buffer_size}")
+print(f"RX Sampling_rate: {conv.rx_sample_rate}")
 
 fs = int(conv.tx_sample_rate)
 A = 0.9 * 2**15  # -6 dBFS
-B = 1e5
+B = 1e4
 T = N_tx / fs
 t = np.linspace(0, T, N_tx, endpoint=False)
 tx_sig = A * np.sin(2 * math.pi * B * t)
 conv.tx([tx_sig,tx_sig])
 
+
+# Generate the TDD frame Rate
+T_tdd = conv.rx_buffer_size / fs
+tdd_t = np.linspace(0, T_tdd, conv.rx_buffer_size, endpoint=False)
+tdd_amplitude = 1
+tdd_freq = 1/(tddn.frame_length_ms* 1e-3)
+tdd_frame_rate_plot = tdd_amplitude * np.sign(np.sin(2 * math.pi * tdd_freq * tdd_t))
+
+
 tddn.sync_soft  = 0
 tddn.sync_soft  = 1
 
-rx_sig = np.zeros((capture_range,2,N_rx)) 
+rx_sig = np.zeros((capture_range,conv.rx_buffer_size)) 
     
 for r in range(capture_range):
-    rx_sig[r]  = conv.rx()
-
+    data  = conv.rx()
+    rx_sig[r]=data[0]
+    
+fig, axs = plt.subplots(3, 1)
+    
 for r in range(capture_range):
-    plt.suptitle(f"Capture number: {r}")
-    plt.plot(rx_sig[0][0], label='Input Channel 1')
-    plt.plot(np.append(tx_sig*0.04, np.zeros(abs(len(rx_sig[0][0]) - len(tx_sig))))-3000, label='Generated Signal')
-plt.legend()
+    
+    # Plot the received signal
+    
+    axs[0].plot(rx_sig[r])
+    axs[0].set_title(f"Received Signal - Capture number: {r}")
+    axs[0].set_xlabel("Sample")
+    axs[0].set_ylabel("Amplitude")
+    
+    # Plot the TDD frame rate 
+    
+    axs[1].plot(tdd_frame_rate_plot)
+    axs[1].set_title("TDD frame rate")
+    axs[1].set_xlabel("Sample")
+    axs[1].set_ylabel("Amplitude")
+
+    tx_signal_padded = np.append(tx_sig, np.zeros(abs(len(rx_sig[0]) - len(tx_sig))))
+    
+    # Plot the transmitted signal
+   
+    axs[2].plot(tx_signal_padded)
+    axs[2].set_title("Transmitted Signal")
+    axs[2].set_xlabel("Sample")
+    axs[2].set_ylabel("Amplitude")
+
+plt.tight_layout()  
 plt.show()
 
 tddn.enable = 0
